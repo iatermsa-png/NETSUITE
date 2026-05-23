@@ -1,2 +1,5 @@
+“datos/“ filter=lfs diff=lfs merge=lfs -text
+“storage/“ filter=lfs diff=lfs merge=lfs -text
+*.json filter=lfs diff=lfs merge=lfs -text
 storage/docstore.json filter=lfs diff=lfs merge=lfs -text
 storage/default__vector_store.json filter=lfs diff=lfs merge=lfs -text
