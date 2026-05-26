@@ -67,37 +67,62 @@ def cargar_indice():
 
     if not os.path.exists(data_path) or not os.listdir(data_path):
         return None, f"⚠️ La carpeta '{data_path}' está vacía o no existe."
-    try:
-        if os.path.exists(storage_path) and os.listdir(storage_path):
-            storage_context = StorageContext.from_defaults(persist_dir=storage_path)
-            index = load_index_from_storage(storage_context)
-            
-            num_files = 0
-            if os.path.exists(metadata_file):
-                with open(metadata_file, "r") as f:
-                    try:
-                        metadata = json.load(f)
-                        num_files = metadata.get("num_files", 0)
-                    except json.JSONDecodeError:
-                        num_files = 0
-            
-            if num_files > 0:
-                return index, f"✅ Índice cargado con éxito ({num_files} archivos)."
-            else:
-                return index, "✅ Índice cargado con éxito."
 
+    def _es_puntero_lfs(ruta):
+        # Si el índice se sirviera por Git LFS en un entorno que no lo resuelve
+        # (p. ej. el build de Railway), los .json llegarían como punteros de
+        # texto ("version https://git-lfs...") en vez de JSON real.
+        try:
+            with open(ruta, "rb") as f:
+                return f.read(64).startswith(b"version https://git-lfs")
+        except OSError:
+            return False
+
+    def _storage_utilizable():
+        requeridos = ["docstore.json", "index_store.json", "default__vector_store.json"]
+        for nombre in requeridos:
+            ruta = os.path.join(storage_path, nombre)
+            if not (os.path.exists(ruta) and os.path.getsize(ruta) > 0):
+                return False
+            if _es_puntero_lfs(ruta):
+                return False
+        return True
+
+    try:
+        if _storage_utilizable():
+            try:
+                storage_context = StorageContext.from_defaults(persist_dir=storage_path)
+                index = load_index_from_storage(storage_context)
+
+                num_files = 0
+                if os.path.exists(metadata_file):
+                    with open(metadata_file, "r") as f:
+                        try:
+                            num_files = json.load(f).get("num_files", 0)
+                        except json.JSONDecodeError:
+                            num_files = 0
+
+                if num_files > 0:
+                    return index, f"✅ Índice cargado con éxito ({num_files} archivos)."
+                return index, "✅ Índice cargado con éxito."
+            except Exception:
+                # El índice existe pero no se pudo leer; se reconstruye desde ./datos.
+                pass
+
+        # No hay índice utilizable: se construye desde los PDF y se persiste en
+        # ./storage (montado como Volumen de Railway para sobrevivir redeploys).
         docs = SimpleDirectoryReader(data_path).load_data()
-        
+
         num_files = 0
         if docs:
             file_names = {doc.metadata.get('file_name') for doc in docs if doc.metadata and 'file_name' in doc.metadata}
             num_files = len(file_names)
 
         index = VectorStoreIndex.from_documents(docs)
-        index.storage_context.persist(persist_dir=storage_path)
 
         if not os.path.exists(storage_path):
             os.makedirs(storage_path)
+        index.storage_context.persist(persist_dir=storage_path)
         with open(metadata_file, "w") as f:
             json.dump({"num_files": num_files}, f)
 

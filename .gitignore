@@ -220,3 +220,7 @@ __marimo__/
 .streamlit/
 
 .vscode/
+
+# LlamaIndex vector index — rebuilt from ./datos at runtime, persisted on a
+# Railway Volume. Never commit it (it's ~950 MB and host-specific).
+storage/

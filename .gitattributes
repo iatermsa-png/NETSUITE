@@ -1,5 +1,8 @@
-“datos/“ filter=lfs diff=lfs merge=lfs -text
-“storage/“ filter=lfs diff=lfs merge=lfs -text
-*.json filter=lfs diff=lfs merge=lfs -text
-storage/docstore.json filter=lfs diff=lfs merge=lfs -text
-storage/default__vector_store.json filter=lfs diff=lfs merge=lfs -text
+# No Git LFS.
+#
+# Railway builds from a snapshot tarball (no .git), so it never resolves LFS
+# objects — LFS-tracked files arrive as useless pointer stubs. Therefore:
+#   - datos/*.pdf are committed as plain git blobs so they materialize in the
+#     Railway build and the app can read/cite them.
+#   - storage/ (the ~950 MB vector index) is NOT tracked at all; it's a build
+#     artifact rebuilt from ./datos at runtime and kept on a Railway Volume.
