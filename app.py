@@ -181,7 +181,7 @@ def _cargar_indice_postgres(pg, data_path, dim_actual):
     # PGVectorStore crea la tabla real con prefijo "data_".
     if _pgvector_tiene_datos(params, f"data_{table_name}"):
         index = VectorStoreIndex.from_vector_store(vector_store)
-        return index, "✅ Índice cargado desde Postgres (pgvector)."
+        return index, "Índice de la base de datos cargado correctamente."
 
     # Tabla vacía o inexistente: se construye desde los PDF y queda persistida.
     docs = _cargar_documentos(data_path)
