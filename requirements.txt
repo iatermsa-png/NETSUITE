@@ -4,4 +4,7 @@ llama-index>=0.10.0
 openai
 pypdf
 llama-index-llms-openai
-llama-index-embeddings-openai
+llama-index-embeddings-huggingface
+llama-index-vector-stores-postgres
+psycopg2-binary
+torch

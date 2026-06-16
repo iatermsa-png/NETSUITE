@@ -4,13 +4,19 @@ import json
 from datetime import datetime
 from dotenv import load_dotenv
 from llama_index.core import (
-    VectorStoreIndex, 
-    SimpleDirectoryReader, 
-    StorageContext, 
-    load_index_from_storage, 
-    PromptTemplate
+    VectorStoreIndex,
+    SimpleDirectoryReader,
+    StorageContext,
+    load_index_from_storage,
+    PromptTemplate,
+    Settings,
+    Document,
 )
+from pypdf import PdfReader  # loader por página (preserva page_label)
 from llama_index.core.memory import ChatMemoryBuffer # <--- MEJORA 1: MEMORIA
+from llama_index.core.llms import ChatMessage, MessageRole  # para inyectar memoria en cache hits
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding  # embeddings locales (gratis)
+from llama_index.llms.openai import OpenAI
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Asistente Virtual de Netsuite", page_icon="💼", layout="centered")
@@ -59,6 +65,137 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 2. LÓGICA DE CARGA ORIGINAL ---
+def _cargar_documentos(data_path):
+    """Carga los PDF como un Document por página, preservando page_label.
+
+    El lector por defecto concatenaba cada PDF en un único Document sin número
+    de página, lo que rompía las referencias "archivo y página" y generaba un
+    blob enorme. pypdf nos da las páginas explícitamente.
+    """
+    documentos = []
+    pdfs = [f for f in sorted(os.listdir(data_path)) if f.lower().endswith(".pdf")]
+    for idx, fname in enumerate(pdfs, 1):
+        fpath = os.path.join(data_path, fname)
+        try:
+            lector = PdfReader(fpath)
+        except Exception:
+            continue
+        for i, page in enumerate(lector.pages):
+            texto = page.extract_text() or ""
+            if not texto.strip():
+                continue
+            documentos.append(Document(
+                text=texto,
+                metadata={
+                    "file_name": fname,
+                    "file_path": fpath,
+                    "page_label": str(i + 1),
+                },
+            ))
+        if idx % 40 == 0:
+            print(f"[loader] {idx}/{len(pdfs)} PDFs procesados", flush=True)
+    return documentos
+
+
+def _config_postgres():
+    """Parámetros de conexión a Postgres si Railway los inyectó, o None.
+
+    Railway expone DATABASE_URL (y/o PGHOST/PGPORT/...) al enlazar un plugin
+    Postgres. Sin estas variables (p. ej. en local) devuelve None y la app usa
+    el índice JSON de ./storage de siempre.
+    """
+    if os.environ.get("DATABASE_URL"):
+        return {"url": os.environ["DATABASE_URL"]}
+    if os.environ.get("PGHOST"):
+        return {
+            "host": os.environ["PGHOST"],
+            "port": int(os.environ.get("PGPORT", "5432")),
+            "user": os.environ.get("PGUSER", "postgres"),
+            "password": os.environ.get("PGPASSWORD", ""),
+            "database": os.environ.get("PGDATABASE", "railway"),
+        }
+    return None
+
+
+def _params_pg(pg):
+    """Normaliza la config (URL o PG* sueltas) a host/port/user/password/database."""
+    if "url" in pg:
+        from sqlalchemy import make_url
+        u = make_url(pg["url"])
+        return {
+            "host": u.host,
+            "port": u.port or 5432,
+            "user": u.username,
+            "password": u.password,
+            "database": u.database,
+        }
+    return pg
+
+
+def _pgvector_tiene_datos(params, full_table):
+    """True si la tabla del vector store ya tiene filas (índice ya construido)."""
+    import psycopg2
+    try:
+        conn = psycopg2.connect(
+            host=params["host"], port=params["port"], user=params["user"],
+            password=params["password"], dbname=params["database"],
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass(%s)", (full_table,))
+                if cur.fetchone()[0] is None:
+                    return False
+                cur.execute(f"SELECT COUNT(*) FROM {full_table}")
+                return cur.fetchone()[0] > 0
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def _cargar_indice_postgres(pg, data_path, dim_actual):
+    """Carga el índice desde Postgres/pgvector, o lo construye una sola vez.
+
+    Persistir los vectores en Postgres elimina el cold-start de Railway: tras la
+    primera construcción, cada redeploy solo los lee (segundos) en vez de volver
+    a embeber ~25k chunks.
+    """
+    from llama_index.vector_stores.postgres import PGVectorStore
+
+    params = _params_pg(pg)
+    table_name = "netsuite_docs"
+    embed_dim = dim_actual or 384
+
+    vector_store = PGVectorStore.from_params(
+        host=params["host"], port=params["port"], user=params["user"],
+        password=params["password"], database=params["database"],
+        table_name=table_name, embed_dim=embed_dim,
+        hnsw_kwargs={
+            "hnsw_m": 16,
+            "hnsw_ef_construction": 64,
+            "hnsw_ef_search": 40,
+            "hnsw_dist_method": "vector_cosine_ops",
+        },
+    )
+
+    # PGVectorStore crea la tabla real con prefijo "data_".
+    if _pgvector_tiene_datos(params, f"data_{table_name}"):
+        index = VectorStoreIndex.from_vector_store(vector_store)
+        return index, "✅ Índice cargado desde Postgres (pgvector)."
+
+    # Tabla vacía o inexistente: se construye desde los PDF y queda persistida.
+    docs = _cargar_documentos(data_path)
+    num_files = len({
+        doc.metadata.get("file_name")
+        for doc in docs if doc.metadata and "file_name" in doc.metadata
+    }) if docs else 0
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+    index = VectorStoreIndex.from_documents(
+        docs, storage_context=storage_context, show_progress=True,
+    )
+    return index, f"🆕 Índice creado en Postgres con {num_files} archivos."
+
+
 @st.cache_resource(show_spinner="Cargando base de conocimiento... 🧠")
 def cargar_indice():
     storage_path = "./storage"
@@ -88,20 +225,45 @@ def cargar_indice():
                 return False
         return True
 
+    def _leer_metadata():
+        if os.path.exists(metadata_file):
+            try:
+                with open(metadata_file, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                return {}
+        return {}
+
+    # Dimensión del modelo de embeddings activo. Un índice persistido con otro
+    # modelo (p. ej. el viejo de OpenAI, 1536-dim) es incompatible y debe
+    # reconstruirse; si no, el retrieval falla con "shapes not aligned".
     try:
-        if _storage_utilizable():
+        dim_actual = len(Settings.embed_model.get_query_embedding("dim_check"))
+    except Exception:
+        dim_actual = None
+
+    # --- CAPA 2: backend pgvector (Railway). Si hay Postgres configurado, el
+    # índice vive en la BD y sobrevive a los redeploys (sin cold-start). En
+    # local, sin variables PG*, se cae al índice JSON de ./storage de abajo. ---
+    pg = _config_postgres()
+    if pg is not None:
+        try:
+            return _cargar_indice_postgres(pg, data_path, dim_actual)
+        except Exception as e:
+            return None, f"❌ Error con Postgres: {e}"
+
+    try:
+        meta = _leer_metadata()
+        indice_compatible = (
+            _storage_utilizable()
+            and dim_actual is not None
+            and meta.get("embed_dim") == dim_actual
+        )
+        if indice_compatible:
             try:
                 storage_context = StorageContext.from_defaults(persist_dir=storage_path)
                 index = load_index_from_storage(storage_context)
-
-                num_files = 0
-                if os.path.exists(metadata_file):
-                    with open(metadata_file, "r") as f:
-                        try:
-                            num_files = json.load(f).get("num_files", 0)
-                        except json.JSONDecodeError:
-                            num_files = 0
-
+                num_files = meta.get("num_files", 0)
                 if num_files > 0:
                     return index, f"✅ Índice cargado con éxito ({num_files} archivos)."
                 return index, "✅ Índice cargado con éxito."
@@ -109,28 +271,50 @@ def cargar_indice():
                 # El índice existe pero no se pudo leer; se reconstruye desde ./datos.
                 pass
 
-        # No hay índice utilizable: se construye desde los PDF y se persiste en
+        # No hay índice utilizable (falta, está dañado, son punteros LFS o cambió
+        # el modelo de embeddings): se construye desde los PDF y se persiste en
         # ./storage (montado como Volumen de Railway para sobrevivir redeploys).
-        docs = SimpleDirectoryReader(data_path).load_data()
+        docs = _cargar_documentos(data_path)
 
         num_files = 0
         if docs:
             file_names = {doc.metadata.get('file_name') for doc in docs if doc.metadata and 'file_name' in doc.metadata}
             num_files = len(file_names)
 
-        index = VectorStoreIndex.from_documents(docs)
+        # show_progress imprime una barra en el terminal mientras se generan los
+        # embeddings (lento en CPU: ~25k chunks); sin esto parece "colgado".
+        index = VectorStoreIndex.from_documents(docs, show_progress=True)
 
         if not os.path.exists(storage_path):
             os.makedirs(storage_path)
         index.storage_context.persist(persist_dir=storage_path)
         with open(metadata_file, "w") as f:
-            json.dump({"num_files": num_files}, f)
+            json.dump({"num_files": num_files, "embed_dim": dim_actual}, f)
 
         return index, f"🆕 Índice creado con {num_files} archivos."
     except Exception as e:
         return None, f"❌ Error: {e}"
 
+@st.cache_resource(show_spinner="Cargando modelo de embeddings local... 🔤")
+def configurar_modelos():
+    # Embeddings locales (gratis, sin OpenAI): multilingüe para preguntas en
+    # español sobre documentación en inglés. Se cachea en el Volumen.
+    Settings.embed_model = HuggingFaceEmbedding(
+        model_name="intfloat/multilingual-e5-base",
+        cache_folder="./storage/.hf_cache",
+        query_instruction="query: ",   # e5 requiere estos prefijos para
+        text_instruction="passage: ",  # buen retrieval
+        embed_batch_size=64,           # lotes grandes aprovechan la GPU (MPS)
+    )
+    # chunk_size alineado al límite del modelo (512 tok) para no truncar.
+    Settings.chunk_size = 512
+    Settings.chunk_overlap = 50
+    # OpenAI solo para generar las respuestas (modelo económico).
+    Settings.llm = OpenAI(model="gpt-4o-mini")
+    return True
+
 load_dotenv()
+configurar_modelos()
 index, status_msg = cargar_indice()
 
 if "messages" not in st.session_state:
@@ -182,15 +366,25 @@ if not st.session_state.messages:
                 st.session_state.pre_filled_prompt = question
                 st.session_state.send_prompt = True
 
+# --- CAPA 3: caché de respuestas. Preguntas repetidas (botones de ejemplo,
+# dudas frecuentes) se sirven al instante y sin gastar tokens de OpenAI. El dict
+# vive en el proceso (compartido entre sesiones) gracias a cache_resource. ---
+@st.cache_resource(show_spinner=False)
+def _cache_respuestas():
+    return {}
+
 # --- 5. MOTOR DE CHAT (MEJORA: REEMPLAZA QUERY_ENGINE POR CHAT_ENGINE) ---
 if index:
     if "chat_engine" not in st.session_state:
-        # Buffer de memoria para recordar el contexto de la charla
-        memory = ChatMemoryBuffer.from_defaults(token_limit=3900)
+        # CAPA 3: menos historial por llamada (3900 -> 1500 tokens) recorta los
+        # tokens enviados a OpenAI sin perder el contexto inmediato.
+        memory = ChatMemoryBuffer.from_defaults(token_limit=1500)
+        st.session_state.chat_memory = memory  # ref para inyectar en cache hits
         st.session_state.chat_engine = index.as_chat_engine(
             chat_mode="context",
             memory=memory,
-            system_prompt="Eres un experto en NetSuite. Responde de forma profesional, clara y estructurada. Usa negritas para puntos clave."
+            similarity_top_k=2,  # CAPA 3: 2 chunks en vez del default reduce contexto
+            system_prompt="Eres un experto en NetSuite. Responde de forma concisa, clara y estructurada. Usa negritas para los puntos clave."
         )
 else:
     st.stop()
@@ -233,31 +427,51 @@ if prompt_to_process:
     with st.chat_message("assistant"):
         # Contenedor vacío para el efecto de escritura palabra por palabra
         response_placeholder = st.empty()
-        full_response = ""
-        
-        # Llamada con Streaming
-        response = st.session_state.chat_engine.stream_chat(prompt_to_process)
-        
-        for token in response.response_gen:
-            full_response += token
-            response_placeholder.markdown(full_response + "▌") # Cursor de escritura
-        
-        response_placeholder.markdown(full_response)
-        
-        # Procesar fuentes del nodo de respuesta
-        fuentes_encontradas = []
-        for nodo in response.source_nodes:
-            fuentes_encontradas.append({
-                "nombre": nodo.metadata.get('file_name', 'Desconocido'),
-                "ruta": nodo.metadata.get('file_path', f"./datos/{nodo.metadata.get('file_name')}"),
-                "pagina": nodo.metadata.get('page_label', 'N/A'),
-                "texto": nodo.get_text()[:200]
-            })
-        
+
+        cache = _cache_respuestas()
+        clave = prompt_to_process.strip().lower()
+        # Solo cacheamos preguntas sin historial previo: así la respuesta depende
+        # únicamente de la pregunta (determinista) y el cache es siempre válido.
+        # (el mensaje del usuario ya se agregó arriba, por eso <= 1).
+        sin_historial = len(st.session_state.messages) <= 1
+
+        if sin_historial and clave in cache:
+            # CACHE HIT: respuesta instantánea, 0 tokens a OpenAI.
+            full_response, fuentes_encontradas = cache[clave]
+            response_placeholder.markdown(full_response)
+            # Mantener la memoria del chat coherente para posibles follow-ups.
+            if "chat_memory" in st.session_state:
+                st.session_state.chat_memory.put(
+                    ChatMessage(role=MessageRole.USER, content=prompt_to_process))
+                st.session_state.chat_memory.put(
+                    ChatMessage(role=MessageRole.ASSISTANT, content=full_response))
+        else:
+            # CACHE MISS: streaming normal (palabra por palabra) vía OpenAI.
+            full_response = ""
+            response = st.session_state.chat_engine.stream_chat(prompt_to_process)
+            for token in response.response_gen:
+                full_response += token
+                response_placeholder.markdown(full_response + "▌")  # Cursor de escritura
+            response_placeholder.markdown(full_response)
+
+            # Procesar fuentes del nodo de respuesta
+            fuentes_encontradas = []
+            for nodo in response.source_nodes:
+                fuentes_encontradas.append({
+                    "nombre": nodo.metadata.get('file_name', 'Desconocido'),
+                    "ruta": nodo.metadata.get('file_path', f"./datos/{nodo.metadata.get('file_name')}"),
+                    "pagina": nodo.metadata.get('page_label', 'N/A'),
+                    "texto": nodo.get_text()[:200]
+                })
+
+            # Guardar en caché solo preguntas sin historial (cap de 200 entradas).
+            if sin_historial and len(cache) < 200:
+                cache[clave] = (full_response, fuentes_encontradas)
+
         mostrar_fuentes_persistentes(fuentes_encontradas, len(st.session_state.messages))
-        
+
         st.session_state.messages.append({
-            "role": "assistant", 
+            "role": "assistant",
             "content": full_response,
             "fuentes": fuentes_encontradas
         })

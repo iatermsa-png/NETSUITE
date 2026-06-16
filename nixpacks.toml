@@ -1,0 +1,14 @@
+# Build de Railway (Capa 1). Instala torch en su variante CPU-only: la imagen
+# pasa de ~3GB a ~700MB y el build es más rápido. En Railway no hay GPU, así
+# que la versión CUDA por defecto sería peso muerto. torch queda satisfecho
+# antes de `pip install -r requirements.txt`, así que ahí no se reinstala.
+[phases.install]
+cmds = [
+  "python -m venv --copies /opt/venv",
+  ". /opt/venv/bin/activate && pip install --upgrade pip",
+  ". /opt/venv/bin/activate && pip install torch --index-url https://download.pytorch.org/whl/cpu",
+  ". /opt/venv/bin/activate && pip install -r requirements.txt",
+]
+
+[start]
+cmd = ". /opt/venv/bin/activate && streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
