@@ -10,5 +10,8 @@ cmds = [
   ". /opt/venv/bin/activate && pip install -r requirements.txt",
 ]
 
+# --server.fileWatcherType none: en producción no hace falta el hot-reload, y
+# su watcher intenta importar módulos de imágenes de transformers que requieren
+# torchvision (que quitamos), saturando los logs. Apagarlo elimina ese ruido.
 [start]
-cmd = ". /opt/venv/bin/activate && streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
+cmd = ". /opt/venv/bin/activate && streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.fileWatcherType none"
