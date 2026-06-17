@@ -196,6 +196,65 @@ def _cargar_indice_postgres(pg, data_path, dim_actual):
     return index, f"🆕 Índice creado en Postgres con {num_files} archivos."
 
 
+def _guardar_comentario_pg(params, registro):
+    """Inserta un comentario en la tabla `comentarios` (la crea si no existe)."""
+    import psycopg2
+    conn = psycopg2.connect(
+        host=params["host"], port=params["port"], user=params["user"],
+        password=params["password"], dbname=params["database"],
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS comentarios (
+                    id SERIAL PRIMARY KEY,
+                    fecha TIMESTAMPTZ DEFAULT now(),
+                    usuario TEXT,
+                    comentario TEXT NOT NULL
+                )"""
+            )
+            cur.execute(
+                "INSERT INTO comentarios (usuario, comentario) VALUES (%s, %s)",
+                (registro["usuario"], registro["comentario"]),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def guardar_comentario(texto, usuario=None):
+    """Persiste un comentario del usuario.
+
+    Usa Postgres si Railway lo tiene configurado (sobrevive a los redeploys); en
+    local, o si la BD falla, cae a un archivo `comentarios.jsonl` para no perder
+    el comentario.
+    """
+    texto = (texto or "").strip()
+    if not texto:
+        return False, "Escribe un comentario antes de enviar."
+
+    registro = {
+        "fecha": datetime.now().isoformat(timespec="seconds"),
+        "usuario": usuario or "anónimo",
+        "comentario": texto,
+    }
+
+    pg = _config_postgres()
+    if pg is not None:
+        try:
+            _guardar_comentario_pg(_params_pg(pg), registro)
+            return True, "¡Gracias! Tu comentario fue enviado. 🙌"
+        except Exception:
+            pass  # si la BD falla no perdemos el comentario: archivo local.
+
+    try:
+        with open("comentarios.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(registro, ensure_ascii=False) + "\n")
+        return True, "¡Gracias! Tu comentario fue enviado. 🙌"
+    except Exception as e:
+        return False, f"No se pudo guardar el comentario: {e}"
+
+
 @st.cache_resource(show_spinner="Cargando base de conocimiento... 🧠")
 def cargar_indice():
     storage_path = "./storage"
@@ -343,6 +402,23 @@ with st.sidebar:
         st.session_state.acceso_concedido = False
         st.rerun()
 
+    st.markdown("---")
+    st.subheader("💬 Comentarios")
+    # clear_on_submit limpia el recuadro tras enviar; el form agrupa el text
+    # area y el botón para que solo se procese al pulsar "Enviar comentarios".
+    with st.form("form_comentarios", clear_on_submit=True):
+        comentario_txt = st.text_area(
+            "¿Tienes una sugerencia o reportas un problema?",
+            placeholder="Escribe tu comentario aquí...",
+            height=100,
+        )
+        if st.form_submit_button("Enviar comentarios", use_container_width=True):
+            ok, msg = guardar_comentario(comentario_txt)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+
 # --- 4. DISEÑO PRINCIPAL ---
 col1, col2 = st.columns([1, 3])
 with col1:
@@ -390,14 +466,39 @@ else:
     st.stop()
 
 def mostrar_fuentes_persistentes(fuentes_list, id_mensaje):
+    # Descarga directa del/los manual(es) de donde salió la respuesta, visible
+    # sin abrir el expander y sin repetir archivos.
+    vistos = []
+    nombres_vistos = set()
+    for f in fuentes_list:
+        if f['nombre'] in nombres_vistos:
+            continue
+        nombres_vistos.add(f['nombre'])
+        vistos.append(f)
+
+    if vistos:
+        st.markdown("**📥 Descargar manual de origen:**")
+        cols = st.columns(min(len(vistos), 3))
+        for j, f in enumerate(vistos):
+            with cols[j % len(cols)]:
+                if os.path.exists(f['ruta']):
+                    with open(f['ruta'], "rb") as file_data:
+                        st.download_button(
+                            label=f"📖 {f['nombre']}",
+                            data=file_data,
+                            file_name=f['nombre'],
+                            mime="application/pdf",
+                            key=f"dl_{id_mensaje}_{j}",
+                            use_container_width=True,
+                        )
+                else:
+                    st.caption(f"📄 {f['nombre']} (archivo no disponible)")
+
     with st.expander("🔍 Ver referencia exacta (Archivo y Página)"):
         for i, f in enumerate(fuentes_list):
             st.markdown(f"**Referencia #{i+1}:**")
             st.markdown(f"📄 **Archivo:** `{f['nombre']}`")
             st.markdown(f"📑 **Página:** `{f['pagina']}`")
-            if os.path.exists(f['ruta']):
-                with open(f['ruta'], "rb") as file_data:
-                    st.download_button(label=f"📖 Abrir manual: {f['nombre']}", data=file_data, file_name=f['nombre'], mime="application/pdf", key=f"btn_{id_mensaje}_{i}")
             st.markdown(f"📝 **Texto original:** _{f['texto']}_")
             st.divider()
 

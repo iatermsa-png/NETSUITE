@@ -224,3 +224,5 @@ __marimo__/
 # LlamaIndex vector index — rebuilt from ./datos at runtime, persisted on a
 # Railway Volume. Never commit it (it's ~950 MB and host-specific).
 storage/
+# Fallback local del formulario de comentarios (en Railway van a Postgres).
+comentarios.jsonl
