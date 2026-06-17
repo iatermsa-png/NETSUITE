@@ -426,7 +426,16 @@ with col1:
 with col2:
     st.title("💼 Asistente Virtual de Netsuite")
 
-if not st.session_state.messages:
+def _seleccionar_ejemplo(pregunta):
+    # Callback: corre ANTES del rerun, así el clic SIEMPRE queda registrado.
+    # Antes, los botones se re-renderizaban junto a la primera respuesta y al
+    # pulsar otro ya no existían en el siguiente run: el clic se perdía y el
+    # chat parecía congelarse.
+    st.session_state.pre_filled_prompt = pregunta
+    st.session_state.send_prompt = True
+
+# Ocultamos los ejemplos en cuanto hay historial o una pregunta ya en cola.
+if not st.session_state.messages and not st.session_state.send_prompt:
     st.markdown("---")
     st.subheader("Ejemplos de Preguntas:")
     example_questions = [
@@ -438,9 +447,13 @@ if not st.session_state.messages:
     cols = st.columns(2)
     for i, question in enumerate(example_questions):
         with cols[i % 2]:
-            if st.button(question, key=f"q_button_{i}", use_container_width=True):
-                st.session_state.pre_filled_prompt = question
-                st.session_state.send_prompt = True
+            st.button(
+                question,
+                key=f"q_button_{i}",
+                use_container_width=True,
+                on_click=_seleccionar_ejemplo,
+                args=(question,),
+            )
 
 # --- CAPA 3: caché de respuestas. Preguntas repetidas (botones de ejemplo,
 # dudas frecuentes) se sirven al instante y sin gastar tokens de OpenAI. El dict
@@ -465,6 +478,26 @@ if index:
 else:
     st.stop()
 
+def _resolver_ruta_pdf(nombre, ruta):
+    """Devuelve una ruta existente al PDF de origen, o None.
+
+    El índice guarda file_path como ruta ABSOLUTA del Mac donde se construyó
+    (/Users/.../datos/X.pdf), que no existe en Railway. Por eso resolvemos
+    primero por nombre contra ./datos (versionado en git, presente en prod) y
+    solo usamos la ruta guardada como último recurso (sirve en local).
+    """
+    candidatos = []
+    if nombre:
+        candidatos.append(os.path.join("datos", nombre))
+    if ruta:
+        candidatos.append(os.path.join("datos", os.path.basename(ruta)))
+        candidatos.append(ruta)
+    for c in candidatos:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
 def mostrar_fuentes_persistentes(fuentes_list, id_mensaje):
     # Descarga directa del/los manual(es) de donde salió la respuesta, visible
     # sin abrir el expander y sin repetir archivos.
@@ -481,8 +514,9 @@ def mostrar_fuentes_persistentes(fuentes_list, id_mensaje):
         cols = st.columns(min(len(vistos), 3))
         for j, f in enumerate(vistos):
             with cols[j % len(cols)]:
-                if os.path.exists(f['ruta']):
-                    with open(f['ruta'], "rb") as file_data:
+                ruta_real = _resolver_ruta_pdf(f['nombre'], f.get('ruta'))
+                if ruta_real:
+                    with open(ruta_real, "rb") as file_data:
                         st.download_button(
                             label=f"📖 {f['nombre']}",
                             data=file_data,
