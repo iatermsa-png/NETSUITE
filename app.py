@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import re
 import json
 from datetime import datetime
 from dotenv import load_dotenv
@@ -536,6 +537,50 @@ def mostrar_fuentes_persistentes(fuentes_list, id_mensaje):
             st.markdown(f"📝 **Texto original:** _{f['texto']}_")
             st.divider()
 
+
+def generar_sugerencias(pregunta, respuesta, n=3):
+    """Propone preguntas de seguimiento NUEVAS y relevantes a partir de la
+    respuesta dada. Devuelve [] si algo falla, para nunca romper el chat."""
+    try:
+        prompt = (
+            "Eres un asistente de NetSuite. A partir de esta conversación, "
+            f"propón {n} preguntas de seguimiento breves, claras y DISTINTAS "
+            "entre sí que el usuario podría querer hacer a continuación. "
+            "Responde SOLO con las preguntas, una por línea, en español, sin "
+            "numeración ni viñetas.\n\n"
+            f"Pregunta del usuario: {pregunta}\n\n"
+            f"Respuesta:\n{respuesta[:1500]}\n\n"
+            "Preguntas de seguimiento:"
+        )
+        salida = str(Settings.llm.complete(prompt))
+        preguntas = []
+        for linea in salida.splitlines():
+            t = re.sub(r"^\s*(?:\d+[\.\)]|[-*•])\s*", "", linea).strip()
+            if len(t) > 8 and t.endswith("?"):
+                preguntas.append(t)
+        return preguntas[:n]
+    except Exception:
+        return []
+
+
+def mostrar_sugerencias(sugerencias, id_mensaje):
+    """Botones clicables con las preguntas de seguimiento. Al pulsar uno se
+    envía esa pregunta (mismo mecanismo que los ejemplos iniciales)."""
+    if not sugerencias:
+        return
+    st.markdown("**💡 Preguntas relacionadas:**")
+    cols = st.columns(min(len(sugerencias), 3))
+    for j, q in enumerate(sugerencias):
+        with cols[j % len(cols)]:
+            st.button(
+                q,
+                key=f"sug_{id_mensaje}_{j}",
+                use_container_width=True,
+                on_click=_seleccionar_ejemplo,
+                args=(q,),
+            )
+
+
 # Mostrar historial de mensajes
 for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
@@ -572,7 +617,9 @@ if prompt_to_process:
 
         if sin_historial and clave in cache:
             # CACHE HIT: respuesta instantánea, 0 tokens a OpenAI.
-            full_response, fuentes_encontradas = cache[clave]
+            cached = cache[clave]
+            full_response, fuentes_encontradas = cached[0], cached[1]
+            sugerencias = cached[2] if len(cached) > 2 else []
             response_placeholder.markdown(full_response)
             # Mantener la memoria del chat coherente para posibles follow-ups.
             if "chat_memory" in st.session_state:
@@ -599,14 +646,27 @@ if prompt_to_process:
                     "texto": nodo.get_text()[:200]
                 })
 
+            # Preguntas de seguimiento nuevas, basadas en la respuesta recién dada.
+            sugerencias = generar_sugerencias(prompt_to_process, full_response)
+
             # Guardar en caché solo preguntas sin historial (cap de 200 entradas).
             if sin_historial and len(cache) < 200:
-                cache[clave] = (full_response, fuentes_encontradas)
+                cache[clave] = (full_response, fuentes_encontradas, sugerencias)
 
         mostrar_fuentes_persistentes(fuentes_encontradas, len(st.session_state.messages))
 
         st.session_state.messages.append({
             "role": "assistant",
             "content": full_response,
-            "fuentes": fuentes_encontradas
+            "fuentes": fuentes_encontradas,
+            "sugerencias": sugerencias,
         })
+
+# Sugerencias de seguimiento: solo debajo de la ÚLTIMA respuesta del asistente.
+# Se renderiza aquí (fuera del bloque de chat) para que aparezcan al pie tanto
+# tras una respuesta nueva como al recargar el historial.
+if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
+    mostrar_sugerencias(
+        st.session_state.messages[-1].get("sugerencias", []),
+        len(st.session_state.messages) - 1,
+    )
