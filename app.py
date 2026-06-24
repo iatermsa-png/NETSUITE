@@ -569,6 +569,11 @@ if "send_prompt" not in st.session_state:
 
 # --- 3. BARRA LATERAL ORIGINAL ---
 with st.sidebar:
+    # Sesión activa: arriba a la izquierda, lo primero que se ve.
+    _usuario = st.session_state.get("usuario_actual") or "—"
+    _rol = "Administrador" if st.session_state.get("es_admin") else "Usuario"
+    st.markdown(f"👤 **Sesión:** {_usuario}  \n_{_rol}_")
+    st.markdown("---")
     st.title("🤖 Panel de Control")
     st.markdown("---")
     st.subheader("⚙️ Estado del Sistema")
