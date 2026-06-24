@@ -2,6 +2,8 @@ import streamlit as st
 import os
 import re
 import json
+import hashlib
+import hmac
 from datetime import datetime
 from dotenv import load_dotenv
 from llama_index.core import (
@@ -22,9 +24,223 @@ from llama_index.llms.openai import OpenAI
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Asistente Virtual de Netsuite", page_icon="💼", layout="centered")
 
-# --- BLOQUE DE ACCESO (MANTENIDO IGUAL) ---
+# --- USUARIOS Y AUTENTICACIÓN -------------------------------------------------
+# Las credenciales viven en la tabla `usuarios` de Postgres con contraseñas
+# hasheadas (pbkdf2-sha256, librería estándar; nunca en texto plano ni en git).
+# En Railway la BD ya existe; en local sin BD se cae a un admin de respaldo
+# definido por las variables de entorno ADMIN_USER / ADMIN_PASS.
+load_dotenv()  # antes del login para que la config de la BD esté disponible
+
+
+def _config_postgres():
+    """Parámetros de conexión a Postgres si Railway los inyectó, o None.
+
+    Railway expone DATABASE_URL (y/o PGHOST/PGPORT/...) al enlazar un plugin
+    Postgres. Sin estas variables (p. ej. en local) devuelve None y la app usa
+    el índice JSON de ./storage de siempre.
+    """
+    if os.environ.get("DATABASE_URL"):
+        return {"url": os.environ["DATABASE_URL"]}
+    if os.environ.get("PGHOST"):
+        return {
+            "host": os.environ["PGHOST"],
+            "port": int(os.environ.get("PGPORT", "5432")),
+            "user": os.environ.get("PGUSER", "postgres"),
+            "password": os.environ.get("PGPASSWORD", ""),
+            "database": os.environ.get("PGDATABASE", "railway"),
+        }
+    return None
+
+
+def _params_pg(pg):
+    """Normaliza la config (URL o PG* sueltas) a host/port/user/password/database."""
+    if "url" in pg:
+        from sqlalchemy import make_url
+        u = make_url(pg["url"])
+        return {
+            "host": u.host,
+            "port": u.port or 5432,
+            "user": u.username,
+            "password": u.password,
+            "database": u.database,
+        }
+    return pg
+
+
+def _pg_connect():
+    """Conexión psycopg2 a Postgres, o None si no hay BD o si falla la conexión.
+
+    Devolver None ante un fallo (en vez de propagar) evita que el login crashee
+    si la BD está caída: autenticar() cae entonces al admin de respaldo.
+    """
+    pg = _config_postgres()
+    if pg is None:
+        return None
+    try:
+        import psycopg2
+        p = _params_pg(pg)
+        return psycopg2.connect(
+            host=p["host"], port=p["port"], user=p["user"],
+            password=p["password"], dbname=p["database"],
+        )
+    except Exception:
+        return None
+
+
+_PBKDF2_ITER = 200_000
+
+
+def _hash_password(password, salt=None):
+    """Hash pbkdf2-sha256 autodescriptivo: 'pbkdf2_sha256$iter$salt$hash'."""
+    if salt is None:
+        salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITER)
+    return f"pbkdf2_sha256${_PBKDF2_ITER}${salt.hex()}${dk.hex()}"
+
+
+def _verify_password(password, almacenado):
+    try:
+        _algo, iters, salt_hex, hash_hex = almacenado.split("$")
+        dk = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iters)
+        )
+        return hmac.compare_digest(dk.hex(), hash_hex)
+    except Exception:
+        return False
+
+
+def _asegurar_tabla_usuarios(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS usuarios (
+                id SERIAL PRIMARY KEY,
+                usuario TEXT UNIQUE NOT NULL,
+                pass_hash TEXT NOT NULL,
+                es_admin BOOLEAN DEFAULT FALSE,
+                creado TIMESTAMPTZ DEFAULT now()
+            )"""
+        )
+    conn.commit()
+
+
+def _bootstrap_admin(conn):
+    """Si la tabla está vacía, crea el admin inicial (ADMIN_USER/ADMIN_PASS, o
+    admin/admin123 por defecto) para no quedar nunca sin acceso."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM usuarios")
+        if cur.fetchone()[0] == 0:
+            admin_user = os.environ.get("ADMIN_USER", "admin")
+            admin_pass = os.environ.get("ADMIN_PASS", "admin123")
+            cur.execute(
+                "INSERT INTO usuarios (usuario, pass_hash, es_admin) "
+                "VALUES (%s, %s, TRUE) ON CONFLICT (usuario) DO NOTHING",
+                (admin_user, _hash_password(admin_pass)),
+            )
+    conn.commit()
+
+
+def autenticar(usuario, password):
+    """Devuelve (ok, es_admin). Verifica contra Postgres; sin BD (local) usa el
+    admin de respaldo de las variables de entorno."""
+    usuario = (usuario or "").strip()
+    if not usuario or not password:
+        return False, False
+
+    conn = _pg_connect()
+    if conn is None:
+        admin_user = os.environ.get("ADMIN_USER", "admin")
+        admin_pass = os.environ.get("ADMIN_PASS", "admin123")
+        if usuario == admin_user and password == admin_pass:
+            return True, True
+        return False, False
+
+    try:
+        _asegurar_tabla_usuarios(conn)
+        _bootstrap_admin(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pass_hash, es_admin FROM usuarios WHERE usuario = %s",
+                (usuario,),
+            )
+            fila = cur.fetchone()
+        if fila and _verify_password(password, fila[0]):
+            return True, bool(fila[1])
+        return False, False
+    finally:
+        conn.close()
+
+
+def listar_usuarios():
+    conn = _pg_connect()
+    if conn is None:
+        return []
+    try:
+        _asegurar_tabla_usuarios(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT usuario, es_admin, creado FROM usuarios ORDER BY usuario"
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def crear_usuario(usuario, password, es_admin=False):
+    usuario = (usuario or "").strip()
+    if not usuario or not password:
+        return False, "Usuario y contraseña son obligatorios."
+    if len(password) < 4:
+        return False, "La contraseña debe tener al menos 4 caracteres."
+    conn = _pg_connect()
+    if conn is None:
+        return False, "No hay base de datos configurada (solo disponible en Railway)."
+    try:
+        _asegurar_tabla_usuarios(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM usuarios WHERE usuario = %s", (usuario,))
+            if cur.fetchone():
+                return False, f"El usuario '{usuario}' ya existe."
+            cur.execute(
+                "INSERT INTO usuarios (usuario, pass_hash, es_admin) VALUES (%s, %s, %s)",
+                (usuario, _hash_password(password), bool(es_admin)),
+            )
+        conn.commit()
+        return True, f"Usuario '{usuario}' creado."
+    except Exception as e:
+        return False, f"No se pudo crear: {e}"
+    finally:
+        conn.close()
+
+
+def eliminar_usuario(usuario):
+    conn = _pg_connect()
+    if conn is None:
+        return False, "No hay base de datos configurada."
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT es_admin FROM usuarios WHERE usuario = %s", (usuario,))
+            fila = cur.fetchone()
+            if not fila:
+                return False, "El usuario no existe."
+            # No dejar borrar al último admin: evita quedar sin acceso.
+            if fila[0]:
+                cur.execute("SELECT COUNT(*) FROM usuarios WHERE es_admin = TRUE")
+                if cur.fetchone()[0] <= 1:
+                    return False, "No puedes eliminar al único administrador."
+            cur.execute("DELETE FROM usuarios WHERE usuario = %s", (usuario,))
+        conn.commit()
+        return True, f"Usuario '{usuario}' eliminado."
+    finally:
+        conn.close()
+
+
+# --- BLOQUE DE ACCESO ---
 if "acceso_concedido" not in st.session_state:
     st.session_state.acceso_concedido = False
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = None
+if "es_admin" not in st.session_state:
+    st.session_state.es_admin = False
 
 if not st.session_state.acceso_concedido:
     st.title("🔐 Acceso al Asistente")
@@ -33,9 +249,12 @@ if not st.session_state.acceso_concedido:
         user_auth = st.text_input("Usuario")
         pass_auth = st.text_input("Contraseña", type="password")
         if st.button("Ingresar", use_container_width=True):
-            if user_auth == "hola123" and pass_auth == "123":
+            ok, es_admin = autenticar(user_auth, pass_auth)
+            if ok:
                 st.session_state.acceso_concedido = True
-                st.rerun() 
+                st.session_state.usuario_actual = user_auth.strip()
+                st.session_state.es_admin = es_admin
+                st.rerun()
             else:
                 st.error("Credenciales incorrectas")
     st.stop()
@@ -96,41 +315,6 @@ def _cargar_documentos(data_path):
         if idx % 40 == 0:
             print(f"[loader] {idx}/{len(pdfs)} PDFs procesados", flush=True)
     return documentos
-
-
-def _config_postgres():
-    """Parámetros de conexión a Postgres si Railway los inyectó, o None.
-
-    Railway expone DATABASE_URL (y/o PGHOST/PGPORT/...) al enlazar un plugin
-    Postgres. Sin estas variables (p. ej. en local) devuelve None y la app usa
-    el índice JSON de ./storage de siempre.
-    """
-    if os.environ.get("DATABASE_URL"):
-        return {"url": os.environ["DATABASE_URL"]}
-    if os.environ.get("PGHOST"):
-        return {
-            "host": os.environ["PGHOST"],
-            "port": int(os.environ.get("PGPORT", "5432")),
-            "user": os.environ.get("PGUSER", "postgres"),
-            "password": os.environ.get("PGPASSWORD", ""),
-            "database": os.environ.get("PGDATABASE", "railway"),
-        }
-    return None
-
-
-def _params_pg(pg):
-    """Normaliza la config (URL o PG* sueltas) a host/port/user/password/database."""
-    if "url" in pg:
-        from sqlalchemy import make_url
-        u = make_url(pg["url"])
-        return {
-            "host": u.host,
-            "port": u.port or 5432,
-            "user": u.username,
-            "password": u.password,
-            "database": u.database,
-        }
-    return pg
 
 
 def _pgvector_tiene_datos(params, full_table):
@@ -373,7 +557,6 @@ def configurar_modelos():
     Settings.llm = OpenAI(model="gpt-4o-mini")
     return True
 
-load_dotenv()
 configurar_modelos()
 index, status_msg = cargar_indice()
 
@@ -401,7 +584,44 @@ with st.sidebar:
         st.rerun()
     if st.button("🚪 Cerrar Sesión", use_container_width=True):
         st.session_state.acceso_concedido = False
+        st.session_state.usuario_actual = None
+        st.session_state.es_admin = False
         st.rerun()
+
+    # --- PANEL DE ADMIN: solo visible para usuarios administradores ---
+    if st.session_state.get("es_admin"):
+        st.markdown("---")
+        st.subheader("👤 Gestión de usuarios")
+        with st.expander("Administrar usuarios"):
+            with st.form("form_crear_usuario", clear_on_submit=True):
+                nuevo_user = st.text_input("Nuevo usuario")
+                nueva_pass = st.text_input("Contraseña", type="password")
+                nuevo_admin = st.checkbox("Es administrador")
+                if st.form_submit_button("Crear usuario", use_container_width=True):
+                    ok, msg = crear_usuario(nuevo_user, nueva_pass, nuevo_admin)
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+
+            usuarios = listar_usuarios()
+            if usuarios:
+                st.caption("Usuarios existentes:")
+                for u_nombre, u_admin, _creado in usuarios:
+                    c1, c2 = st.columns([3, 1])
+                    with c1:
+                        st.write(f"{'👑 ' if u_admin else '• '}{u_nombre}")
+                    with c2:
+                        # No ofrecer borrarse a uno mismo (evita auto-bloqueo).
+                        if u_nombre != st.session_state.usuario_actual:
+                            if st.button("🗑️", key=f"del_user_{u_nombre}",
+                                         help=f"Eliminar {u_nombre}"):
+                                ok, msg = eliminar_usuario(u_nombre)
+                                if ok:
+                                    st.success(msg)
+                                else:
+                                    st.error(msg)
+                                st.rerun()
 
     st.markdown("---")
     st.subheader("💬 Comentarios")
