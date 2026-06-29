@@ -259,30 +259,132 @@ if not st.session_state.acceso_concedido:
                 st.error("Credenciales incorrectas")
     st.stop()
 
-# --- BLOQUE DE ESTILOS CSS (TU DISEÑO ORIGINAL SIN CAMBIOS) ---
-st.markdown("""
+# --- BLOQUE DE ESTILOS CSS (tema oscuro por defecto, con opción claro) ---
+if "tema" not in st.session_state:
+    st.session_state.tema = "oscuro"
+
+
+def _css_tema(tema):
+    """Devuelve el CSS para el tema indicado ('oscuro' o 'claro')."""
+    if tema == "claro":
+        bg, bg2, texto = "#FFFFFF", "#F8F9FB", "#1A1C1E"
+        acento, borde, input_bg = "#00417B", "#E0E4E8", "#FFFFFF"
+        placeholder, acento_hover_txt = "#6B7280", "#FFFFFF"
+    else:  # oscuro
+        bg, bg2, texto = "#0E1117", "#1A1D24", "#E6E8EB"
+        acento, borde, input_bg = "#4DA3FF", "#2A2F3A", "#1A1D24"
+        placeholder, acento_hover_txt = "#8A92A0", "#0E1117"
+    return f"""
     <style>
-    .stApp, [data-testid="stHeader"], [data-testid="stBottom"], 
-    [data-testid="stBottomBlockContainer"], .st-emotion-cache-18ni7ap {
-        background-color: #FFFFFF !important;
-    }
-    [data-testid="stExpander"], .st-emotion-cache-p5msec {
-        background-color: #F8F9FB !important;
-        border: 1px solid #E0E4E8 !important;
+    .stApp, [data-testid="stHeader"], [data-testid="stBottom"],
+    [data-testid="stBottomBlockContainer"], .st-emotion-cache-18ni7ap {{
+        background-color: {bg} !important;
+    }}
+    /* Barra inferior del chat: el div a todo el ancho que rodea el input dejaba
+       sus márgenes laterales con el fondo oscuro del tema base. Todo a bg; la
+       caja del input recupera su tono más abajo (reglas de stChatInput). */
+    [data-testid="stBottom"] * {{
+        background-color: {bg} !important;
+    }}
+    [data-testid="stSidebar"] {{ background-color: {bg2} !important; }}
+    [data-testid="stExpander"], .st-emotion-cache-p5msec {{
+        background-color: {bg2} !important;
+        border: 1px solid {borde} !important;
         border-radius: 10px !important;
-    }
-    .stDownloadButton>button {
-        background-color: #FFFFFF !important;
-        color: #00417B !important;
-        border: 1px solid #00417B !important;
+    }}
+    .stDownloadButton>button,
+    .stButton>button,
+    .stFormSubmitButton>button {{
+        background-color: transparent !important;
+        color: {acento} !important;
+        border: 1px solid {acento} !important;
         border-radius: 8px !important;
-    }
-    [data-testid="stChatInput"] { background-color: #FFFFFF !important; }
-    h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown { color: #1A1C1E !important; }
-    [data-testid="stSidebar"] { background-color: #F8F9FB !important; }
-    footer {display: none !important;}
+    }}
+    .stDownloadButton>button:hover,
+    .stButton>button:hover,
+    .stFormSubmitButton>button:hover {{
+        background-color: {acento} !important;
+        color: {acento_hover_txt} !important;
+        border-color: {acento} !important;
+    }}
+    /* Campos de texto, áreas y selects: fondo y texto legibles. */
+    [data-testid="stTextInput"] input,
+    [data-testid="stTextArea"] textarea,
+    .stTextInput input,
+    .stTextArea textarea,
+    [data-baseweb="input"],
+    [data-baseweb="textarea"],
+    [data-baseweb="select"] > div {{
+        background-color: {input_bg} !important;
+        color: {texto} !important;
+    }}
+    /* Chat input: forzar el fondo en TODA la caja y sus wrappers internos
+       (Streamlit usa divs con clases generadas que no se pueden nombrar). */
+    [data-testid="stChatInput"],
+    [data-testid="stChatInput"] *,
+    [data-testid="stBottom"] [data-baseweb="textarea"],
+    [data-testid="stBottom"] [data-baseweb="base-input"] {{
+        background-color: {input_bg} !important;
+    }}
+    [data-testid="stChatInput"],
+    [data-testid="stChatInputTextArea"],
+    [data-testid="stChatInput"] textarea {{
+        color: {texto} !important;
+    }}
+    [data-testid="stChatInput"] > div {{
+        border: 1px solid {borde} !important;
+        border-radius: 10px !important;
+    }}
+    [data-testid="stChatInputSubmitButton"],
+    [data-testid="stChatInputSubmitButton"] svg {{
+        color: {acento} !important;
+        fill: {acento} !important;
+        border: none !important;
+    }}
+    [data-testid="stTextInput"] input::placeholder,
+    [data-testid="stTextArea"] textarea::placeholder,
+    [data-testid="stChatInputTextArea"]::placeholder,
+    [data-testid="stChatInput"] textarea::placeholder {{
+        color: {placeholder} !important;
+    }}
+    h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown {{ color: {texto} !important; }}
+    footer {{ display: none !important; }}
+    /* Ocultar la barra superior derecha de Streamlit (Deploy + menú de 3 puntos). */
+    [data-testid="stToolbar"] {{ display: none !important; }}
+    [data-testid="stToolbarActions"] {{ display: none !important; }}
+    [data-testid="stDeployButton"] {{ display: none !important; }}
+    [data-testid="stMainMenu"] {{ display: none !important; }}
+    #MainMenu {{ display: none !important; }}
+    /* Fijar el botón de tema en la esquina superior derecha, donde estaba Deploy. */
+    .st-key-toggle_tema {{
+        position: fixed !important;
+        top: 0.55rem !important;
+        right: 1rem !important;
+        z-index: 999999 !important;
+        width: auto !important;
+        margin: 0 !important;
+    }}
+    .st-key-toggle_tema button {{
+        padding: 0.25rem 0.75rem !important;
+        white-space: nowrap !important;
+        min-height: 0 !important;
+    }}
     </style>
-    """, unsafe_allow_html=True)
+    """
+
+
+st.markdown(_css_tema(st.session_state.tema), unsafe_allow_html=True)
+
+# Botón de tema en la esquina superior derecha (reemplaza la barra de Deploy).
+# Se fija a esa esquina mediante CSS (.st-key-toggle_tema en _css_tema).
+if st.session_state.tema == "oscuro":
+    if st.button("Modo claro", key="toggle_tema"):
+        st.session_state.tema = "claro"
+        st.rerun()
+else:
+    if st.button("Modo oscuro", key="toggle_tema"):
+        st.session_state.tema = "oscuro"
+        st.rerun()
 
 # --- 2. LÓGICA DE CARGA ORIGINAL ---
 def _cargar_documentos(data_path):

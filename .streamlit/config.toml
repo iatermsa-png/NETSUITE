@@ -1,0 +1,14 @@
+[theme]
+# Tema oscuro por defecto. El usuario puede cambiar a claro con el botón de la
+# esquina superior derecha (el cambio en vivo se hace inyectando CSS según
+# session_state.tema).
+base = "dark"
+primaryColor = "#4DA3FF"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#1A1D24"
+textColor = "#E6E8EB"
+
+[client]
+# Oculta el botón "Deploy" y el menú de 3 puntos desde el primer render del
+# servidor, así no aparecen ni durante la carga ni en la pantalla de login.
+toolbarMode = "minimal"
