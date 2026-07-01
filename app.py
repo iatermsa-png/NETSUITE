@@ -801,10 +801,50 @@ if index:
             chat_mode="context",
             memory=memory,
             similarity_top_k=2,  # CAPA 3: 2 chunks en vez del default reduce contexto
-            system_prompt="Eres un experto en NetSuite. Responde de forma concisa, clara y estructurada. Usa negritas para los puntos clave."
+            system_prompt=(
+                "Eres un asistente experto en NetSuite que responde ÚNICAMENTE con "
+                "base en la información de los manuales de NetSuite incluida en el "
+                "contexto.\n\n"
+                "Reglas obligatorias:\n"
+                "1. Responde solo preguntas relacionadas con NetSuite y su "
+                "documentación.\n"
+                "2. Usa exclusivamente la información del contexto recuperado de los "
+                "manuales. No inventes datos ni uses conocimiento externo.\n"
+                "3. Si la pregunta no está relacionada con NetSuite, o si la "
+                "respuesta no se encuentra en el contexto de los manuales, responde "
+                "exactamente: \"No tengo esa información en los manuales de "
+                "NetSuite.\" y no agregues nada más.\n"
+                "4. Puedes responder saludos o cortesías de forma breve y amable.\n"
+                "5. Responde de forma concisa, clara y estructurada. Usa negritas "
+                "para los puntos clave."
+            )
         )
 else:
     st.stop()
+
+def _es_respuesta_sin_datos(texto):
+    """True si la respuesta indica que no hay información en los manuales.
+
+    Cuando el modelo no encuentra la respuesta en el contexto, contesta la
+    frase fija del system_prompt ("No tengo esa información en los manuales de
+    NetSuite."). En esos casos no tiene sentido ofrecer una fuente, así que
+    detectamos ese caso (y variantes de "no sé") para ocultar las fuentes.
+    """
+    if not texto:
+        return True
+    t = texto.strip().lower()
+    señales = (
+        "no tengo esa información en los manuales",
+        "no tengo esa informacion en los manuales",
+        "no tengo información en los manuales",
+        "no tengo informacion en los manuales",
+        "no encontré esa información",
+        "no encontre esa informacion",
+        "no sé la respuesta",
+        "no se la respuesta",
+    )
+    return any(s in t for s in señales)
+
 
 def _resolver_ruta_pdf(nombre, ruta):
     """Devuelve una ruta existente al PDF de origen, o None.
@@ -947,6 +987,8 @@ if prompt_to_process:
             cached = cache[clave]
             full_response, fuentes_encontradas = cached[0], cached[1]
             sugerencias = cached[2] if len(cached) > 2 else []
+            if _es_respuesta_sin_datos(full_response):
+                fuentes_encontradas = []  # nunca ofrecer fuente en un "no sé"
             response_placeholder.markdown(full_response)
             # Mantener la memoria del chat coherente para posibles follow-ups.
             if "chat_memory" in st.session_state:
@@ -963,15 +1005,17 @@ if prompt_to_process:
                 response_placeholder.markdown(full_response + "▌")  # Cursor de escritura
             response_placeholder.markdown(full_response)
 
-            # Procesar fuentes del nodo de respuesta
+            # Procesar fuentes del nodo de respuesta. Si el modelo respondió que
+            # no tiene la información en los manuales, no mostramos fuente alguna.
             fuentes_encontradas = []
-            for nodo in response.source_nodes:
-                fuentes_encontradas.append({
-                    "nombre": nodo.metadata.get('file_name', 'Desconocido'),
-                    "ruta": nodo.metadata.get('file_path', f"./datos/{nodo.metadata.get('file_name')}"),
-                    "pagina": nodo.metadata.get('page_label', 'N/A'),
-                    "texto": nodo.get_text()[:200]
-                })
+            if not _es_respuesta_sin_datos(full_response):
+                for nodo in response.source_nodes:
+                    fuentes_encontradas.append({
+                        "nombre": nodo.metadata.get('file_name', 'Desconocido'),
+                        "ruta": nodo.metadata.get('file_path', f"./datos/{nodo.metadata.get('file_name')}"),
+                        "pagina": nodo.metadata.get('page_label', 'N/A'),
+                        "texto": nodo.get_text()[:200]
+                    })
 
             # Preguntas de seguimiento nuevas, basadas en la respuesta recién dada.
             sugerencias = generar_sugerencias(prompt_to_process, full_response)
