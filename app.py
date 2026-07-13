@@ -766,20 +766,23 @@ if index:
         st.session_state.chat_engine = index.as_chat_engine(
             chat_mode="context",
             memory=memory,
-            similarity_top_k=2,  # CAPA 3: 2 chunks en vez del default reduce contexto
+            similarity_top_k=6,  # más recall: reduce falsos "no sé" por fallas de recuperación
             system_prompt=(
-                "Eres un asistente experto en NetSuite que responde ÚNICAMENTE con "
-                "base en la información de los manuales de NetSuite incluida en el "
-                "contexto.\n\n"
+                "Eres un asistente experto en NetSuite que responde con base en la "
+                "información de los manuales de NetSuite incluida en el contexto.\n\n"
                 "Reglas obligatorias:\n"
                 "1. Responde solo preguntas relacionadas con NetSuite y su "
                 "documentación.\n"
-                "2. Usa exclusivamente la información del contexto recuperado de los "
-                "manuales. No inventes datos ni uses conocimiento externo.\n"
-                "3. Si la pregunta no está relacionada con NetSuite, o si la "
-                "respuesta no se encuentra en el contexto de los manuales, responde "
-                "exactamente: \"No tengo esa información en los manuales de "
-                "NetSuite.\" y no agregues nada más.\n"
+                "2. Basa tu respuesta en la información del contexto recuperado de "
+                "los manuales. Puedes resumir, combinar y explicar con tus palabras "
+                "lo que aparece en el contexto, pero no inventes datos ni agregues "
+                "información externa que no esté respaldada por el contexto.\n"
+                "3. Si el contexto contiene información relacionada con la pregunta "
+                "—aunque sea parcial— úsala para dar la mejor respuesta posible e "
+                "indica qué parte no está cubierta. Responde exactamente \"No tengo "
+                "esa información en los manuales de NetSuite.\" ÚNICAMENTE cuando la "
+                "pregunta no tenga relación con NetSuite, o cuando el contexto no "
+                "contenga absolutamente nada relacionado con la pregunta.\n"
                 "4. Puedes responder saludos o cortesías de forma breve y amable.\n"
                 "5. Responde de forma concisa, clara y estructurada. Usa negritas "
                 "para los puntos clave."
@@ -862,13 +865,14 @@ def mostrar_fuentes_persistentes(fuentes_list, id_mensaje):
                 else:
                     st.caption(f"📄 {f['nombre']} (archivo no disponible)")
 
-    with st.expander("🔍 Ver referencia exacta (Archivo y Página)"):
-        for i, f in enumerate(fuentes_list):
-            st.markdown(f"**Referencia #{i+1}:**")
-            st.markdown(f"📄 **Archivo:** `{f['nombre']}`")
-            st.markdown(f"📑 **Página:** `{f['pagina']}`")
-            st.markdown(f"📝 **Texto original:** _{f['texto']}_")
-            st.divider()
+    if fuentes_list:
+        with st.expander("🔍 Ver referencia exacta (Archivo y Página)"):
+            for i, f in enumerate(fuentes_list):
+                st.markdown(f"**Referencia #{i+1}:**")
+                st.markdown(f"📄 **Archivo:** `{f['nombre']}`")
+                st.markdown(f"📑 **Página:** `{f['pagina']}`")
+                st.markdown(f"📝 **Texto original:** _{f['texto']}_")
+                st.divider()
 
 
 def generar_sugerencias(pregunta, respuesta, n=3):
@@ -987,7 +991,9 @@ if prompt_to_process:
             sugerencias = generar_sugerencias(prompt_to_process, full_response)
 
             # Guardar en caché solo preguntas sin historial (cap de 200 entradas).
-            if sin_historial and len(cache) < 200:
+            # Nunca cacheamos un "no sé": un rechazo puntual o por falla de
+            # recuperación no debe quedar pegado; así la misma pregunta reintenta.
+            if sin_historial and len(cache) < 200 and not _es_respuesta_sin_datos(full_response):
                 cache[clave] = (full_response, fuentes_encontradas, sugerencias)
 
         mostrar_fuentes_persistentes(fuentes_encontradas, len(st.session_state.messages))
