@@ -25,7 +25,7 @@ from llama_index.llms.openai import OpenAI
 st.set_page_config(page_title="Asistente Virtual de Netsuite", page_icon="💼", layout="centered")
 
 # --- USUARIOS Y AUTENTICACIÓN -------------------------------------------------
-# Las credenciales viven en la tabla `usuarios` de Postgres con contraseñas
+# Las credenciales viven en la tabla `usuarios_netsuite` de Postgres con contraseñas
 # hasheadas (pbkdf2-sha256, librería estándar; nunca en texto plano ni en git).
 # En Railway la BD ya existe; en local sin BD se cae a un admin de respaldo
 # definido por las variables de entorno ADMIN_USER / ADMIN_PASS.
@@ -111,8 +111,20 @@ def _verify_password(password, almacenado):
 
 def _asegurar_tabla_usuarios(conn):
     with conn.cursor() as cur:
+        # Migración: si aún existe la tabla vieja `usuarios`, la renombra a
+        # `usuarios_netsuite` preservando los datos. Idempotente: no hace nada
+        # una vez migrada ni en instalaciones nuevas.
         cur.execute(
-            """CREATE TABLE IF NOT EXISTS usuarios (
+            """DO $$
+            BEGIN
+                IF to_regclass('usuarios') IS NOT NULL
+                   AND to_regclass('usuarios_netsuite') IS NULL THEN
+                    ALTER TABLE usuarios RENAME TO usuarios_netsuite;
+                END IF;
+            END $$;"""
+        )
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS usuarios_netsuite (
                 id SERIAL PRIMARY KEY,
                 usuario TEXT UNIQUE NOT NULL,
                 pass_hash TEXT NOT NULL,
@@ -127,12 +139,12 @@ def _bootstrap_admin(conn):
     """Si la tabla está vacía, crea el admin inicial (ADMIN_USER/ADMIN_PASS, o
     admin/admin123 por defecto) para no quedar nunca sin acceso."""
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM usuarios")
+        cur.execute("SELECT COUNT(*) FROM usuarios_netsuite")
         if cur.fetchone()[0] == 0:
             admin_user = os.environ.get("ADMIN_USER", "admin")
             admin_pass = os.environ.get("ADMIN_PASS", "admin123")
             cur.execute(
-                "INSERT INTO usuarios (usuario, pass_hash, es_admin) "
+                "INSERT INTO usuarios_netsuite (usuario, pass_hash, es_admin) "
                 "VALUES (%s, %s, TRUE) ON CONFLICT (usuario) DO NOTHING",
                 (admin_user, _hash_password(admin_pass)),
             )
@@ -159,7 +171,7 @@ def autenticar(usuario, password):
         _bootstrap_admin(conn)
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT pass_hash, es_admin FROM usuarios WHERE usuario = %s",
+                "SELECT pass_hash, es_admin FROM usuarios_netsuite WHERE usuario = %s",
                 (usuario,),
             )
             fila = cur.fetchone()
@@ -178,7 +190,7 @@ def listar_usuarios():
         _asegurar_tabla_usuarios(conn)
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT usuario, es_admin, creado FROM usuarios ORDER BY usuario"
+                "SELECT usuario, es_admin, creado FROM usuarios_netsuite ORDER BY usuario"
             )
             return cur.fetchall()
     finally:
@@ -197,11 +209,11 @@ def crear_usuario(usuario, password, es_admin=False):
     try:
         _asegurar_tabla_usuarios(conn)
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM usuarios WHERE usuario = %s", (usuario,))
+            cur.execute("SELECT 1 FROM usuarios_netsuite WHERE usuario = %s", (usuario,))
             if cur.fetchone():
                 return False, f"El usuario '{usuario}' ya existe."
             cur.execute(
-                "INSERT INTO usuarios (usuario, pass_hash, es_admin) VALUES (%s, %s, %s)",
+                "INSERT INTO usuarios_netsuite (usuario, pass_hash, es_admin) VALUES (%s, %s, %s)",
                 (usuario, _hash_password(password), bool(es_admin)),
             )
         conn.commit()
@@ -218,16 +230,16 @@ def eliminar_usuario(usuario):
         return False, "No hay base de datos configurada."
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT es_admin FROM usuarios WHERE usuario = %s", (usuario,))
+            cur.execute("SELECT es_admin FROM usuarios_netsuite WHERE usuario = %s", (usuario,))
             fila = cur.fetchone()
             if not fila:
                 return False, "El usuario no existe."
             # No dejar borrar al último admin: evita quedar sin acceso.
             if fila[0]:
-                cur.execute("SELECT COUNT(*) FROM usuarios WHERE es_admin = TRUE")
+                cur.execute("SELECT COUNT(*) FROM usuarios_netsuite WHERE es_admin = TRUE")
                 if cur.fetchone()[0] <= 1:
                     return False, "No puedes eliminar al único administrador."
-            cur.execute("DELETE FROM usuarios WHERE usuario = %s", (usuario,))
+            cur.execute("DELETE FROM usuarios_netsuite WHERE usuario = %s", (usuario,))
         conn.commit()
         return True, f"Usuario '{usuario}' eliminado."
     finally:
@@ -464,7 +476,7 @@ def _cargar_indice_postgres(pg, data_path, dim_actual):
 
 
 def _guardar_comentario_pg(params, registro):
-    """Inserta un comentario en la tabla `comentarios` (la crea si no existe)."""
+    """Inserta un comentario en la tabla `comentarios_netsuite` (la crea si no existe)."""
     import psycopg2
     conn = psycopg2.connect(
         host=params["host"], port=params["port"], user=params["user"],
@@ -472,8 +484,19 @@ def _guardar_comentario_pg(params, registro):
     )
     try:
         with conn.cursor() as cur:
+            # Migración: renombra la tabla vieja `comentarios` a
+            # `comentarios_netsuite` si existe, preservando los datos.
             cur.execute(
-                """CREATE TABLE IF NOT EXISTS comentarios (
+                """DO $$
+                BEGIN
+                    IF to_regclass('comentarios') IS NOT NULL
+                       AND to_regclass('comentarios_netsuite') IS NULL THEN
+                        ALTER TABLE comentarios RENAME TO comentarios_netsuite;
+                    END IF;
+                END $$;"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS comentarios_netsuite (
                     id SERIAL PRIMARY KEY,
                     fecha TIMESTAMPTZ DEFAULT now(),
                     usuario TEXT,
@@ -481,7 +504,7 @@ def _guardar_comentario_pg(params, registro):
                 )"""
             )
             cur.execute(
-                "INSERT INTO comentarios (usuario, comentario) VALUES (%s, %s)",
+                "INSERT INTO comentarios_netsuite (usuario, comentario) VALUES (%s, %s)",
                 (registro["usuario"], registro["comentario"]),
             )
         conn.commit()
