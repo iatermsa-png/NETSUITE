@@ -346,6 +346,18 @@ def _css_claro():
     [data-testid="stDeployButton"] {{ display: none !important; }}
     [data-testid="stMainMenu"] {{ display: none !important; }}
     #MainMenu {{ display: none !important; }}
+    /* Flechas para colapsar/reabrir el sidebar: el icono usa un color muy tenue
+       (fadedText60) que se pierde sobre el fondo del header y "desaparece".
+       Forzamos un color con contraste para que la flecha siempre se vea. */
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="stExpandSidebarButton"] *,
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapseButton"] * {{
+        color: {acento} !important;
+        fill: {acento} !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+    }}
     </style>
     """
 
