@@ -259,21 +259,12 @@ if not st.session_state.acceso_concedido:
                 st.error("Credenciales incorrectas")
     st.stop()
 
-# --- BLOQUE DE ESTILOS CSS (tema oscuro por defecto, con opción claro) ---
-if "tema" not in st.session_state:
-    st.session_state.tema = "oscuro"
-
-
-def _css_tema(tema):
-    """Devuelve el CSS para el tema indicado ('oscuro' o 'claro')."""
-    if tema == "claro":
-        bg, bg2, texto = "#FFFFFF", "#F8F9FB", "#1A1C1E"
-        acento, borde, input_bg = "#00417B", "#E0E4E8", "#FFFFFF"
-        placeholder, acento_hover_txt = "#6B7280", "#FFFFFF"
-    else:  # oscuro
-        bg, bg2, texto = "#0E1117", "#1A1D24", "#E6E8EB"
-        acento, borde, input_bg = "#4DA3FF", "#2A2F3A", "#1A1D24"
-        placeholder, acento_hover_txt = "#8A92A0", "#0E1117"
+# --- BLOQUE DE ESTILOS CSS (modo claro forzado, único tema de la app) ---
+def _css_claro():
+    """Devuelve el CSS del modo claro (único tema de la app)."""
+    bg, bg2, texto = "#FFFFFF", "#F8F9FB", "#1A1C1E"
+    acento, borde, input_bg = "#00417B", "#E0E4E8", "#FFFFFF"
+    placeholder, acento_hover_txt = "#6B7280", "#FFFFFF"
     return f"""
     <style>
     .stApp, [data-testid="stHeader"], [data-testid="stBottom"],
@@ -355,36 +346,11 @@ def _css_tema(tema):
     [data-testid="stDeployButton"] {{ display: none !important; }}
     [data-testid="stMainMenu"] {{ display: none !important; }}
     #MainMenu {{ display: none !important; }}
-    /* Fijar el botón de tema en la esquina superior derecha, donde estaba Deploy. */
-    .st-key-toggle_tema {{
-        position: fixed !important;
-        top: 0.55rem !important;
-        right: 1rem !important;
-        z-index: 999999 !important;
-        width: auto !important;
-        margin: 0 !important;
-    }}
-    .st-key-toggle_tema button {{
-        padding: 0.25rem 0.75rem !important;
-        white-space: nowrap !important;
-        min-height: 0 !important;
-    }}
     </style>
     """
 
 
-st.markdown(_css_tema(st.session_state.tema), unsafe_allow_html=True)
-
-# Botón de tema en la esquina superior derecha (reemplaza la barra de Deploy).
-# Se fija a esa esquina mediante CSS (.st-key-toggle_tema en _css_tema).
-if st.session_state.tema == "oscuro":
-    if st.button("Modo claro", key="toggle_tema"):
-        st.session_state.tema = "claro"
-        st.rerun()
-else:
-    if st.button("Modo oscuro", key="toggle_tema"):
-        st.session_state.tema = "oscuro"
-        st.rerun()
+st.markdown(_css_claro(), unsafe_allow_html=True)
 
 # --- 2. LÓGICA DE CARGA ORIGINAL ---
 def _cargar_documentos(data_path):

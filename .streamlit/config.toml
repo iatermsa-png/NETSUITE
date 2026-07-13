@@ -1,12 +1,11 @@
 [theme]
-# Tema oscuro por defecto. El usuario puede cambiar a claro con el botón de la
-# esquina superior derecha (el cambio en vivo se hace inyectando CSS según
-# session_state.tema).
-base = "dark"
-primaryColor = "#4DA3FF"
-backgroundColor = "#0E1117"
-secondaryBackgroundColor = "#1A1D24"
-textColor = "#E6E8EB"
+# Modo claro forzado en toda la app (también en la pantalla de login, que se
+# renderiza antes del CSS inyectado, por eso se fija aquí desde el servidor).
+base = "light"
+primaryColor = "#00417B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8F9FB"
+textColor = "#1A1C1E"
 
 [client]
 # Oculta el botón "Deploy" y el menú de 3 puntos desde el primer render del
