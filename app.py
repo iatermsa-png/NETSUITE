@@ -340,8 +340,10 @@ def _css_claro():
     }}
     h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown {{ color: {texto} !important; }}
     footer {{ display: none !important; }}
-    /* Ocultar la barra superior derecha de Streamlit (Deploy + menú de 3 puntos). */
-    [data-testid="stToolbar"] {{ display: none !important; }}
+    /* Ocultar SOLO el Deploy y el menú de 3 puntos, NO el toolbar completo: la
+       flecha para reabrir el sidebar (stExpandSidebarButton) vive DENTRO del
+       toolbar, así que ocultarlo entero la hacía desaparecer y dejaba el
+       sidebar imposible de reabrir. */
     [data-testid="stToolbarActions"] {{ display: none !important; }}
     [data-testid="stDeployButton"] {{ display: none !important; }}
     [data-testid="stMainMenu"] {{ display: none !important; }}
