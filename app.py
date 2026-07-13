@@ -766,7 +766,7 @@ if index:
         st.session_state.chat_engine = index.as_chat_engine(
             chat_mode="context",
             memory=memory,
-            similarity_top_k=6,  # más recall: reduce falsos "no sé" por fallas de recuperación
+            similarity_top_k=6,  
             system_prompt=(
                 "Eres un asistente experto en NetSuite que responde con base en la "
                 "información de los manuales de NetSuite incluida en el contexto.\n\n"
